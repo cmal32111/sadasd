@@ -22,15 +22,12 @@ jobs:
     - name: Create SDK junction (fake 10.0.28000.0 -> real 10.0.26100.0)
       shell: powershell
       run: |
-        # VS 2026 wants SDK 10.0.28000.0 but runner only has 10.0.26100.0
-        # Create junction points so vcvarsall.bat finds the expected paths
         $sdkRoot = "C:\Program Files (x86)\Windows Kits\10"
         $avail = (Get-ChildItem "$sdkRoot\Include" |
           Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
           Sort-Object Name -Descending |
           Select-Object -First 1).Name
         Write-Host "Available SDK: $avail"
-
         $fake = "10.0.28000.0"
         foreach ($sub in @('Include', 'Lib', 'bin')) {
           $src = "$sdkRoot\$sub\$avail"
@@ -40,9 +37,6 @@ jobs:
             Write-Host "Junction: $sub\$fake -> $sub\$avail"
           }
         }
-        # Verify
-        Write-Host "=== SDK Include dirs ==="
-        Get-ChildItem "$sdkRoot\Include" | Select-Object Name, LinkType
 
     - name: Build d8
       shell: powershell
@@ -53,9 +47,11 @@ jobs:
         $outDir = "C:\src\v8\out\x64.release"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
+        # enable_rust=false: skip Rust toolchain (not needed for d8)
         $l1 = 'is_debug = false'
         $l2 = 'target_cpu = "x64"'
-        "$l1`n$l2" | Set-Content -Path "$outDir\args.gn" -Encoding ascii
+        $l3 = 'enable_rust = false'
+        "$l1`n$l2`n$l3" | Set-Content -Path "$outDir\args.gn" -Encoding ascii
 
         Write-Host "=== args.gn ==="
         Get-Content "$outDir\args.gn"
@@ -63,7 +59,22 @@ jobs:
         cd C:\src\v8
         gn.bat gen $outDir
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        autoninja.bat -C $outDir d8
+
+        # Use ninja directly (not autoninja/siso which requires remote exec)
+        ninja.bat -C $outDir d8
+
+    - name: Show build errors
+      if: failure()
+      shell: powershell
+      run: |
+        $out = "C:\src\v8\out\x64.release"
+        foreach ($f in @("siso_output", "siso.exe.INFO")) {
+          $p = "$out\$f"
+          if (Test-Path $p) {
+            Write-Host "=== $f (last 100 lines) ==="
+            Get-Content $p -Tail 100
+          }
+        }
 
     - name: Upload d8
       uses: actions/upload-artifact@v4
